@@ -1,0 +1,32 @@
+services:
+  - type: web
+    name: ai-presentation-service
+    env: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn --config gunicorn.conf.py ppt_flask:app
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: ALLOWED_ORIGINS
+        value: https://yourdomain.com,https://www.yourdomain.com
+      - key: RENDER_DISK_PATH
+        value: /opt/render/project/src/persistent_data
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: AWS_REGION
+        value: us-east-1
+      - key: S3_BUCKET_NAME
+        sync: false
+      - key: MAX_REQUESTS_PER_MINUTE
+        value: "30"
+      - key: LOG_LEVEL
+        value: INFO
+    disk:
+      name: persistent-data
+      mountPath: /opt/render/project/src/persistent_data
+      sizeGB: 1

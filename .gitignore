@@ -1,0 +1,15 @@
+.env
+.env.local
+.env.production
+.env.development
+
+node_modules
+
+__pycache__/
+*.py[cod]
+*.pyc
+*.so
+*.egg-info/
+.eggs/
+venv/
+.venv/
