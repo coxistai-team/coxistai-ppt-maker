@@ -388,7 +388,15 @@ def create_presentation():
             'topic': topic,
             'slides': slides_data,
             'ppt_path': ppt_path,
-            'created_at': datetime.now().isoformat()
+            'created_at': datetime.now().isoformat(),
+            'updated_at': datetime.now().isoformat(),
+            # Add the json_data structure expected by frontend
+            'json_data': {
+                'slides': slides_data,
+                'topic': topic,
+                'created_at': datetime.now().isoformat(),
+                'updated_at': datetime.now().isoformat()
+            }
         }
         
         # Save to persistent storage
@@ -400,6 +408,10 @@ def create_presentation():
         presentations_db[presentation_id] = presentation_data
         
         logger.info(f"Presentation created successfully: {presentation_id}")
+        logger.info(f"Saved to file: {json_file_path}")
+        logger.info(f"Presentation data keys: {list(presentation_data.keys())}")
+        if 'json_data' in presentation_data:
+            logger.info(f"json_data keys: {list(presentation_data['json_data'].keys())}")
         
         return jsonify({
             'success': True,
@@ -423,16 +435,65 @@ def get_presentation_json(presentation_id):
         # Try in-memory first
         if presentation_id in presentations_db:
             presentation = presentations_db[presentation_id]
+            logger.info(f"Found presentation in memory: {presentation_id}")
+            # Check if we have json_data (new format)
             if 'json_data' in presentation and presentation['json_data']:
+                logger.info(f"Returning json_data from memory for: {presentation_id}")
                 return jsonify({
                     'success': True,
                     'presentation_id': presentation_id,
                     'json_data': presentation['json_data']
                 })
+            # Check if we have slides data (fallback format)
+            elif 'slides' in presentation and presentation['slides']:
+                logger.info(f"Converting slides to json_data for: {presentation_id}")
+                # Convert slides to the expected JSON format
+                json_data = {
+                    'slides': presentation['slides'],
+                    'topic': presentation.get('topic', ''),
+                    'created_at': presentation.get('created_at', ''),
+                    'updated_at': presentation.get('updated_at', '')
+                }
+                return jsonify({
+                    'success': True,
+                    'presentation_id': presentation_id,
+                    'json_data': json_data
+                })
         
-        # Fallback to file
+        # Try to load from JSON file (new format)
+        json_file = os.path.join(JSON_FOLDER, f"{presentation_id}.json")
+        if os.path.exists(json_file):
+            logger.info(f"Loading from JSON file: {json_file}")
+            with open(json_file, 'r') as f:
+                presentation_data = json.load(f)
+            
+            # Check if we have json_data (new format)
+            if 'json_data' in presentation_data and presentation_data['json_data']:
+                logger.info(f"Returning json_data from file for: {presentation_id}")
+                return jsonify({
+                    'success': True,
+                    'presentation_id': presentation_id,
+                    'json_data': presentation_data['json_data']
+                })
+            # Check if we have slides data (fallback format)
+            elif 'slides' in presentation_data and presentation_data['slides']:
+                logger.info(f"Converting slides from file to json_data for: {presentation_id}")
+                json_data = {
+                    'slides': presentation_data['slides'],
+                    'topic': presentation_data.get('topic', ''),
+                    'created_at': presentation_data.get('created_at', ''),
+                    'updated_at': presentation_data.get('updated_at', '')
+                }
+                return jsonify({
+                    'success': True,
+                    'presentation_id': presentation_id,
+                    'json_data': json_data
+                })
+        
+        # Fallback to old structure file
         json_file = os.path.join(JSON_FOLDER, f"{presentation_id}_structure.json")
         if os.path.exists(json_file):
+            logger.info(f"Loading from old structure file: {json_file}")
             with open(json_file, 'r') as f:
                 json_data = json.load(f)
             
@@ -445,11 +506,13 @@ def get_presentation_json(presentation_id):
         # Try to load presentation and extract JSON
         presentation_file = os.path.join(PRESENTATIONS_FOLDER, f"{presentation_id}.json")
         if os.path.exists(presentation_file):
+            logger.info(f"Loading from presentation file: {presentation_file}")
             with open(presentation_file, 'r') as f:
                 presentation_data = json.load(f)
             
             # If we have the PPT path, extract JSON
             if 'ppt_path' in presentation_data and os.path.exists(presentation_data['ppt_path']):
+                logger.info(f"Extracting JSON from PPT file: {presentation_data['ppt_path']}")
                 json_data = extract_ppt_to_json(presentation_data['ppt_path'])
                 if json_data:
                     return jsonify({
@@ -458,6 +521,8 @@ def get_presentation_json(presentation_id):
                         'json_data': json_data
                     })
         
+        logger.error(f"Presentation JSON not found for ID: {presentation_id}")
+        logger.error(f"Checked files: {JSON_FOLDER}/{presentation_id}.json, {JSON_FOLDER}/{presentation_id}_structure.json, {PRESENTATIONS_FOLDER}/{presentation_id}.json")
         return jsonify({'success': False, 'error': 'Presentation JSON not found'}), 404
         
     except Exception as e:
