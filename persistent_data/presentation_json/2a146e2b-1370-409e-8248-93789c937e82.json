@@ -1,0 +1,52 @@
+{
+  "id": "2a146e2b-1370-409e-8248-93789c937e82",
+  "topic": "Test Debug",
+  "slides": [
+    {
+      "title": "Introduction to Test Debug",
+      "content": [
+        "Welcome to our presentation on Test Debug",
+        "We'll explore key concepts and insights",
+        "Let's dive into the details"
+      ],
+      "description": "Introduction and overview"
+    },
+    {
+      "title": "Summary and Next Steps",
+      "content": [
+        "Key takeaways about Test Debug",
+        "Important conclusions",
+        "Recommended next steps"
+      ],
+      "description": "Summary and conclusion"
+    }
+  ],
+  "ppt_path": "generated_ppts/presentation_test_debug_1753809022.pptx",
+  "created_at": "2025-07-29T22:40:22.697219",
+  "updated_at": "2025-07-29T22:40:22.697229",
+  "json_data": {
+    "slides": [
+      {
+        "title": "Introduction to Test Debug",
+        "content": [
+          "Welcome to our presentation on Test Debug",
+          "We'll explore key concepts and insights",
+          "Let's dive into the details"
+        ],
+        "description": "Introduction and overview"
+      },
+      {
+        "title": "Summary and Next Steps",
+        "content": [
+          "Key takeaways about Test Debug",
+          "Important conclusions",
+          "Recommended next steps"
+        ],
+        "description": "Summary and conclusion"
+      }
+    ],
+    "topic": "Test Debug",
+    "created_at": "2025-07-29T22:40:22.697230",
+    "updated_at": "2025-07-29T22:40:22.697231"
+  }
+}

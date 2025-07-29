@@ -1,0 +1,101 @@
+{
+  "id": "2dbdf29f-70bc-407f-a0e4-43c1daa2faf0",
+  "topic": "animal endangerment",
+  "slides": [
+    {
+      "title": "Introduction to animal endangerment",
+      "content": [
+        "Welcome to our presentation on animal endangerment",
+        "We'll explore key concepts and insights",
+        "Let's dive into the details"
+      ],
+      "description": "Introduction and overview"
+    },
+    {
+      "title": "Key Point 1",
+      "content": [
+        "Important aspect 1 of animal endangerment",
+        "Supporting information and details",
+        "Relevant examples and applications"
+      ],
+      "description": "Key point 1 discussion"
+    },
+    {
+      "title": "Key Point 2",
+      "content": [
+        "Important aspect 2 of animal endangerment",
+        "Supporting information and details",
+        "Relevant examples and applications"
+      ],
+      "description": "Key point 2 discussion"
+    },
+    {
+      "title": "Key Point 3",
+      "content": [
+        "Important aspect 3 of animal endangerment",
+        "Supporting information and details",
+        "Relevant examples and applications"
+      ],
+      "description": "Key point 3 discussion"
+    },
+    {
+      "title": "Summary and Next Steps",
+      "content": [
+        "Key takeaways about animal endangerment",
+        "Important conclusions",
+        "Recommended next steps"
+      ],
+      "description": "Summary and conclusion"
+    }
+  ],
+  "ppt_path": "generated_ppts/presentation_animal_endangerment_1753809774.pptx",
+  "created_at": "2025-07-29T22:52:54.874920",
+  "updated_at": "2025-07-29T23:08:19.033536",
+  "json_data": {
+    "slides": [
+      {
+        "id": "slide-1",
+        "slide_number": 1,
+        "layout_type": "title_and_content",
+        "background": {
+          "type": "gradient",
+          "gradient": "from-purple-600 via-blue-600 to-indigo-700"
+        },
+        "elements": [
+          {
+            "type": "title",
+            "content": "Introduction to animal endangerment",
+            "position": {
+              "left": 50,
+              "top": 50,
+              "width": 800,
+              "height": 100
+            },
+            "style": {
+              "font_size": 40,
+              "font_weight": "bold",
+              "color": "#FFFFFF",
+              "alignment": "center"
+            }
+          },
+          {
+            "type": "text",
+            "content": "Welcome to our presentation on animal endangerment",
+            "position": {
+              "left": 50,
+              "top": 200,
+              "width": 800,
+              "height": 300
+            },
+            "style": {
+              "font_size": 24,
+              "font_weight": "normal",
+              "color": "#FFFFFF",
+              "alignment": "left"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

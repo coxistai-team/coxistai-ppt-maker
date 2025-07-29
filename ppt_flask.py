@@ -603,6 +603,67 @@ def update_slide():
             'error': f'Error updating slide: {str(e)}'
         }), 500
 
+@app.route('/update_presentation_data/<presentation_id>', methods=['PUT', 'OPTIONS'])
+def update_presentation_data(presentation_id):
+    """Update presentation with rich frontend data"""
+    if request.method == 'OPTIONS':
+        response = jsonify({'status': 'OK'})
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
+        response.headers.add('Access-Control-Allow-Methods', 'PUT, OPTIONS')
+        return response
+    
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({
+                'success': False,
+                'error': 'No data provided'
+            }), 400
+        
+        # Load existing presentation
+        if presentation_id not in presentations_db:
+            presentation_file = os.path.join(JSON_FOLDER, f"{presentation_id}.json")
+            if os.path.exists(presentation_file):
+                with open(presentation_file, 'r') as f:
+                    presentations_db[presentation_id] = json.load(f)
+            else:
+                return jsonify({
+                    'success': False,
+                    'error': 'Presentation not found'
+                }), 404
+        
+        presentation = presentations_db[presentation_id]
+        
+        # Update with rich data
+        if 'json_data' in data:
+            presentation['json_data'] = data['json_data']
+            presentation['updated_at'] = datetime.now().isoformat()
+            
+            # Save updated presentation
+            json_file_path = os.path.join(JSON_FOLDER, f"{presentation_id}.json")
+            with open(json_file_path, 'w') as f:
+                json.dump(presentation, f, indent=2)
+            
+            logger.info(f"Updated presentation {presentation_id} with rich data")
+            
+            return jsonify({
+                'success': True,
+                'message': 'Presentation updated with rich data'
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'No json_data provided'
+            }), 400
+            
+    except Exception as e:
+        logger.error(f"Error updating presentation data: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': f'Error updating presentation: {str(e)}'
+        }), 500
+
 @app.route('/export_ppt', methods=['POST', 'OPTIONS'])
 def export_ppt():
     """Export presentation as PowerPoint or PDF with S3 support"""
@@ -626,32 +687,84 @@ def export_ppt():
         
         # Load presentation
         if presentation_id not in presentations_db:
-            presentation_file = os.path.join(PRESENTATIONS_FOLDER, f"{presentation_id}.json")
+            # Try JSON_FOLDER first (where presentations are actually saved)
+            presentation_file = os.path.join(JSON_FOLDER, f"{presentation_id}.json")
             if os.path.exists(presentation_file):
                 with open(presentation_file, 'r') as f:
                     presentations_db[presentation_id] = json.load(f)
             else:
-                return jsonify({
-                    'success': False,
-                    'error': 'Presentation not found'
-                }), 404
+                # Fallback to PRESENTATIONS_FOLDER
+                presentation_file = os.path.join(PRESENTATIONS_FOLDER, f"{presentation_id}.json")
+                if os.path.exists(presentation_file):
+                    with open(presentation_file, 'r') as f:
+                        presentations_db[presentation_id] = json.load(f)
+                else:
+                    return jsonify({
+                        'success': False,
+                        'error': 'Presentation not found'
+                    }), 404
         
         presentation = presentations_db[presentation_id]
         
         if export_format == 'pptx':
-            # Return existing PowerPoint file
-            if 'ppt_path' in presentation and os.path.exists(presentation['ppt_path']):
-                return send_file(
-                    presentation['ppt_path'],
-                    as_attachment=True,
-                    download_name=f"{presentation['topic']}.pptx",
-                    mimetype='application/vnd.openxmlformats-officedocument.presentationml.presentation'
-                )
-            else:
+            # Create enhanced PowerPoint from rich slide data
+            try:
+                # Get the rich slide data from json_data
+                json_data = presentation.get('json_data', {})
+                slides_data = json_data.get('slides', [])
+                
+                logger.info(f"Exporting presentation {presentation_id}")
+                logger.info(f"json_data keys: {list(json_data.keys()) if json_data else 'None'}")
+                logger.info(f"slides_data length: {len(slides_data) if slides_data else 0}")
+                
+                if slides_data:
+                    # Log the first slide structure to debug
+                    if slides_data and len(slides_data) > 0:
+                        first_slide = slides_data[0]
+                        logger.info(f"First slide keys: {list(first_slide.keys())}")
+                        logger.info(f"First slide has elements: {'elements' in first_slide}")
+                        logger.info(f"First slide has background: {'background' in first_slide}")
+                    
+                    # Use enhanced PowerPoint creation with rich data
+                    from modules.pptfinal import create_enhanced_powerpoint
+                    ppt_path = create_enhanced_powerpoint(slides_data, presentation['topic'])
+                    
+                    if ppt_path and os.path.exists(ppt_path):
+                        logger.info(f"Enhanced PowerPoint created successfully: {ppt_path}")
+                        return send_file(
+                            ppt_path,
+                            as_attachment=True,
+                            download_name=f"{presentation['topic']}.pptx",
+                            mimetype='application/vnd.openxmlformats-officedocument.presentationml.presentation'
+                        )
+                    else:
+                        logger.error("Failed to create enhanced PowerPoint - no path returned")
+                        return jsonify({
+                            'success': False,
+                            'error': 'Failed to create enhanced PowerPoint'
+                        }), 500
+                else:
+                    logger.warning("No slides_data found, falling back to basic PowerPoint")
+                    # Fallback to existing PowerPoint file
+                    if 'ppt_path' in presentation and os.path.exists(presentation['ppt_path']):
+                        return send_file(
+                            presentation['ppt_path'],
+                            as_attachment=True,
+                            download_name=f"{presentation['topic']}.pptx",
+                            mimetype='application/vnd.openxmlformats-officedocument.presentationml.presentation'
+                        )
+                    else:
+                        return jsonify({
+                            'success': False,
+                            'error': 'PowerPoint file not found'
+                        }), 404
+            except Exception as e:
+                logger.error(f"Error creating enhanced PowerPoint: {str(e)}")
+                logger.error(f"Traceback: {traceback.format_exc()}")
                 return jsonify({
                     'success': False,
-                    'error': 'PowerPoint file not found'
-                }), 404
+                    'error': f'Error creating PowerPoint: {str(e)}'
+                }), 500
         
         elif export_format == 'pdf':
             # Create PDF export
