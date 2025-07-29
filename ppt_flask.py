@@ -333,176 +333,86 @@ def health_check():
 
 @app.route('/create_presentation', methods=['POST', 'OPTIONS'])
 def create_presentation():
-    """Create a new presentation with S3 integration"""
+    """Create a new AI-generated presentation"""
     if request.method == 'OPTIONS':
-        response = jsonify({'status': 'OK'})
-        response.headers.add('Access-Control-Allow-Origin', '*')
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
-        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
-        return response
+        return '', 200
     
     try:
-        logger.info("=== CREATE PRESENTATION REQUEST ===")
-        data = request.get_json()
-        logger.info(f"Request data: {data}")
-        
-        # Rate limit check
+        # Rate limiting check
         client_ip = request.remote_addr
         if not rate_limit_check(client_ip):
-            return jsonify({
-                'success': False,
-                'error': 'Rate limit exceeded. Please try again later.'
-            }), 429
-
-        is_valid, error_msg = validate_presentation_request(data)
-        if not is_valid:
-            return jsonify({
-                'success': False,
-                'error': error_msg
-            }), 400
+            return jsonify({'error': 'Rate limit exceeded. Please try again later.'}), 429
+        
+        # Validate request data
+        data = request.get_json()
+        logger.info("=== CREATE PRESENTATION REQUEST ===")
+        logger.info(f"Request data: {data}")
+        
+        if not data:
+            return jsonify({'error': 'No data provided'}), 400
         
         topic = data.get('topic', '').strip()
         num_slides = data.get('slides', 5)
         
         if not topic:
-            return jsonify({
-                'success': False,
-                'error': 'Topic is required'
-            }), 400
+            return jsonify({'error': 'Topic is required'}), 400
         
-        try:
-            num_slides = int(num_slides)
-            if num_slides < 1 or num_slides > 20:
-                return jsonify({
-                    'success': False,
-                    'error': 'Number of slides must be between 1 and 20'
-                }), 400
-        except (ValueError, TypeError):
-            return jsonify({
-                'success': False,
-                'error': 'Invalid number of slides'
-            }), 400
-
+        if not isinstance(num_slides, int) or num_slides < 1 or num_slides > 20:
+            return jsonify({'error': 'Number of slides must be between 1 and 20'}), 400
+        
         logger.info(f"Creating presentation about '{topic}' with {num_slides} slides")
         
-        # Generate AI content with timeout
-        try:
-            content = generate_ai_content(topic, num_slides, OPENROUTER_API_KEY)
-            
-            if not content:
-                return jsonify({
-                    'success': False,
-                    'error': 'Failed to generate presentation content. Please try again.'
-                }), 500
-        except Exception as e:
-            logger.error(f"Error generating AI content: {str(e)}")
-            return jsonify({
-                'success': False,
-                'error': 'AI content generation failed. Please try again later.'
-            }), 500
+        # Generate AI content
+        if not OPENROUTER_API_KEY:
+            return jsonify({'error': 'AI service not configured'}), 500
+        
+        slides_data = generate_ai_content(topic, num_slides, OPENROUTER_API_KEY)
+        
+        if not slides_data:
+            logger.error("Failed to generate AI content")
+            return jsonify({'error': 'Failed to generate presentation content. Please try again.'}), 500
         
         # Create PowerPoint file
-        try:
-            ppt_path = create_powerpoint(content, topic)
-            
-            if not ppt_path or not os.path.exists(ppt_path):
-                return jsonify({
-                    'success': False,
-                    'error': 'Failed to create PowerPoint file'
-                }), 500
-        except Exception as e:
-            logger.error(f"Error creating PowerPoint: {str(e)}")
-            return jsonify({
-                'success': False,
-                'error': 'Failed to create presentation file. Please try again.'
-            }), 500
+        ppt_path = create_powerpoint(slides_data, topic)
         
-        # Extract to JSON for web rendering
-        try:
-            presentation_json = extract_ppt_to_json(ppt_path)
-            
-            if not presentation_json:
-                return jsonify({
-                    'success': False,
-                    'error': 'Failed to process presentation structure'
-                }), 500
-        except Exception as e:
-            logger.error(f"Error extracting presentation JSON: {str(e)}")
-            return jsonify({
-                'success': False,
-                'error': 'Failed to process presentation structure'
-            }), 500
+        if not ppt_path:
+            logger.error("Failed to create PowerPoint file")
+            return jsonify({'error': 'Failed to create presentation file. Please try again.'}), 500
         
-        # Generate presentation ID
-        presentation_id = f"pres_{int(datetime.now().timestamp())}_{str(uuid.uuid4())[:8]}"
+        # Generate unique presentation ID
+        presentation_id = str(uuid.uuid4())
         
-        # Store presentation in memory
+        # Create presentation data
         presentation_data = {
             'id': presentation_id,
             'topic': topic,
-            'created_at': datetime.now().isoformat(),
-            'updated_at': datetime.now().isoformat(),
-            'slide_count': len(content),
+            'slides': slides_data,
             'ppt_path': ppt_path,
-            'json_data': presentation_json
+            'created_at': datetime.now().isoformat()
         }
         
+        # Save to persistent storage
+        json_file_path = os.path.join(JSON_FOLDER, f"{presentation_id}.json")
+        with open(json_file_path, 'w') as f:
+            json.dump(presentation_data, f, indent=2)
+        
+        # Store in memory for quick access
         presentations_db[presentation_id] = presentation_data
         
-        # Upload to S3 if available
-        s3_urls = {}
-        if s3_service.is_available():
-            try:
-                s3_urls = s3_service.upload_presentation_data(presentation_id, presentation_data)
-                logger.info(f"Uploaded presentation to S3: {s3_urls}")
-                
-                # Update presentation data with S3 URLs
-                presentation_data['s3_urls'] = s3_urls
-                presentations_db[presentation_id] = presentation_data
-                
-            except Exception as e:
-                logger.error(f"Failed to upload to S3: {e}")
-                # Continue without S3 - fallback to local storage
+        logger.info(f"Presentation created successfully: {presentation_id}")
         
-        # Save to local file as backup
-        try:
-            presentation_file = os.path.join(PRESENTATIONS_FOLDER, f"{presentation_id}.json")
-            with open(presentation_file, 'w') as f:
-                json.dump(presentation_data, f, indent=2)
-        except Exception as e:
-            logger.error(f"Failed to save presentation file: {e}")
-        
-        # Save JSON representation separately
-        if presentation_json:
-            try:
-                json_file = os.path.join(JSON_FOLDER, f"{presentation_id}_structure.json")
-                with open(json_file, 'w') as f:
-                    json.dump(presentation_json, f, indent=2)
-            except Exception as e:
-                logger.error(f"Failed to save JSON structure: {e}")
-        
-        response_data = {
+        return jsonify({
             'success': True,
             'presentation_id': presentation_id,
             'topic': topic,
-            'slide_count': len(content),
-            'message': f'Successfully created {len(content)} slides about {topic}',
-            'created_at': presentation_data['created_at'],
-            'json_available': presentation_json is not None,
-            's3_uploaded': bool(s3_urls),
-            's3_urls': s3_urls
-        }
-        
-        logger.info("=== PRESENTATION CREATED SUCCESSFULLY ===")
-        return jsonify(response_data)
+            'slides': slides_data,
+            'message': 'Presentation created successfully'
+        })
         
     except Exception as e:
-        logger.error(f"Error in create_presentation: {str(e)}")
-        traceback.print_exc()
-        return jsonify({
-            'success': False,
-            'error': f'Internal server error: {str(e)}'
-        }), 500
+        logger.error(f"Error creating presentation: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return jsonify({'error': 'Internal server error. Please try again.'}), 500
 
 @app.route('/get_presentation_json/<presentation_id>', methods=['GET'])
 def get_presentation_json(presentation_id):

@@ -45,10 +45,26 @@ def generate_ai_content(topic: str, num_slides: int, api_key: str) -> Optional[L
         2. Key points or bullet points (3-5 points per slide)
         3. A brief description of what should be included
         
+        IMPORTANT: You must respond with ONLY a valid JSON array. Do not include any other text, explanations, or markdown formatting.
+        
         Format the response as a JSON array with each slide containing:
-        - title: The slide title
+        - title: The slide title (string)
         - content: Main content points as an array of strings
-        - description: Brief description of the slide's purpose
+        - description: Brief description of the slide's purpose (string)
+        
+        Example format:
+        [
+          {{
+            "title": "Introduction",
+            "content": ["Point 1", "Point 2", "Point 3"],
+            "description": "Overview of the topic"
+          }},
+          {{
+            "title": "Key Concepts",
+            "content": ["Concept 1", "Concept 2", "Concept 3"],
+            "description": "Main concepts to understand"
+          }}
+        ]
         
         Make the content informative, engaging, and well-structured.
         Focus on the most important aspects of {topic}.
@@ -84,6 +100,8 @@ def generate_ai_content(topic: str, num_slides: int, api_key: str) -> Optional[L
             result = response.json()
             content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
             
+            logger.info(f"Raw AI response: {content[:200]}...")  # Log first 200 chars
+            
             # Parse the JSON response
             try:
                 slides_data = json.loads(content)
@@ -91,10 +109,12 @@ def generate_ai_content(topic: str, num_slides: int, api_key: str) -> Optional[L
                     logger.info(f"Successfully generated {len(slides_data)} slides")
                     return slides_data
                 else:
-                    logger.error("AI response is not a list")
-                    return None
+                    logger.error(f"AI response is not a list, got: {type(slides_data)}")
+                    logger.error(f"Response content: {content}")
+                    return create_fallback_slides(topic, num_slides, content)
             except json.JSONDecodeError as e:
                 logger.error(f"Failed to parse AI response as JSON: {e}")
+                logger.error(f"Raw content: {content}")
                 # Fallback: create basic slides from the text
                 return create_fallback_slides(topic, num_slides, content)
         else:
@@ -119,6 +139,19 @@ def create_fallback_slides(topic: str, num_slides: int, ai_content: str = "") ->
     """
     slides = []
     
+    # Try to extract useful content from AI response if available
+    extracted_content = []
+    if ai_content:
+        # Try to extract bullet points or key phrases
+        lines = ai_content.split('\n')
+        for line in lines:
+            line = line.strip()
+            if line and len(line) > 10 and not line.startswith('```'):
+                # Remove markdown formatting
+                line = line.replace('*', '').replace('**', '').replace('#', '')
+                if line:
+                    extracted_content.append(line)
+    
     # Title slide
     slides.append({
         "title": f"Introduction to {topic}",
@@ -132,15 +165,29 @@ def create_fallback_slides(topic: str, num_slides: int, ai_content: str = "") ->
     
     # Content slides
     for i in range(1, num_slides - 1):
-        slides.append({
-            "title": f"Key Point {i}",
-            "content": [
-                f"Important aspect {i} of {topic}",
-                "Supporting information and details",
-                "Relevant examples and applications"
-            ],
-            "description": f"Key point {i} discussion"
-        })
+        if extracted_content and i - 1 < len(extracted_content):
+            # Use extracted content if available
+            content_point = extracted_content[i - 1]
+            slides.append({
+                "title": f"Key Point {i}",
+                "content": [
+                    content_point,
+                    "Supporting information and details",
+                    "Relevant examples and applications"
+                ],
+                "description": f"Key point {i} discussion"
+            })
+        else:
+            # Use generic content
+            slides.append({
+                "title": f"Key Point {i}",
+                "content": [
+                    f"Important aspect {i} of {topic}",
+                    "Supporting information and details",
+                    "Relevant examples and applications"
+                ],
+                "description": f"Key point {i} discussion"
+            })
     
     # Conclusion slide
     slides.append({
