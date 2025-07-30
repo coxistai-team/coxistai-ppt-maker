@@ -4,9 +4,18 @@ from datetime import datetime
 import traceback
 from typing import Optional, Dict, Any
 
+# Load environment variables from .env file
+from dotenv import load_dotenv
+load_dotenv()
+
 # Use a persistent disk path from an environment variable, with a local fallback
 PERSISTENT_STORAGE_PATH = os.getenv("RENDER_DISK_PATH", "persistent_data")
-os.makedirs(PERSISTENT_STORAGE_PATH, exist_ok=True)
+try:
+    os.makedirs(PERSISTENT_STORAGE_PATH, exist_ok=True)
+except PermissionError:
+    # Fallback to local directory if Render path is not accessible
+    PERSISTENT_STORAGE_PATH = "persistent_data"
+    os.makedirs(PERSISTENT_STORAGE_PATH, exist_ok=True)
 
 from flask import Flask, request, jsonify, send_file, render_template_string
 import uuid
@@ -27,8 +36,8 @@ from pptx.enum.shapes import MSO_SHAPE_TYPE
 import base64
 
 # Import the PowerPoint generator functions
-from modules.pptfinal import generate_ai_content, create_powerpoint, create_enhanced_powerpoint
-from modules.s3_service import s3_service
+from modules.pptfinal import generate_ai_content, create_powerpoint, create_enhanced_powerpoint, create_powerpoint_from_rich_slides
+from modules.s3_service import get_s3_service
 
 # Configure logging with better formatting
 logging.basicConfig(
@@ -303,6 +312,7 @@ def extract_ppt_to_json(ppt_path):
 
 @app.route('/')
 def test():
+    s3_service = get_s3_service()
     s3_status = "Available" if s3_service.is_available() else "Not Available"
     return jsonify({
         "status": "Flask is running!",
@@ -323,6 +333,7 @@ def test():
 @app.route('/health')
 def health_check():
     """Health check endpoint"""
+    s3_service = get_s3_service()
     s3_available = s3_service.is_available()
     
     # Check R2 configuration
@@ -396,6 +407,7 @@ def create_presentation():
         
         # Upload PowerPoint file to R2 if available
         s3_url = None
+        s3_service = get_s3_service()
         if s3_service.is_available() and ppt_path:
             try:
                 filename = os.path.basename(ppt_path)
@@ -431,6 +443,7 @@ def create_presentation():
         presentations_db[presentation_id] = presentation_data
         
         # Upload presentation data to R2
+        s3_service = get_s3_service()
         if s3_service.is_available():
             try:
                 s3_service.upload_presentation_data(presentation_id, presentation_data)
@@ -615,6 +628,7 @@ def update_slide():
             json.dump(presentation, f, indent=2)
         
         # Update S3 if available
+        s3_service = get_s3_service()
         if s3_service.is_available() and 's3_urls' in presentation:
             try:
                 s3_service.upload_presentation_data(presentation_id, presentation)
@@ -756,14 +770,24 @@ def export_ppt():
                         logger.info(f"First slide has elements: {'elements' in first_slide}")
                         logger.info(f"First slide has background: {'background' in first_slide}")
                     
-                    # Use enhanced PowerPoint creation with rich data
-                    from modules.pptfinal import create_enhanced_powerpoint
-                    ppt_path = create_enhanced_powerpoint(slides_data, presentation['topic'])
+                    # Check if this is rich slide data (frontend format) or basic slide data
+                    has_elements = any('elements' in slide for slide in slides_data)
+                    has_background = any('background' in slide for slide in slides_data)
+                    
+                    if has_elements and has_background:
+                        # Use rich slide format (frontend data)
+                        logger.info("Detected rich slide data, using create_powerpoint_from_rich_slides")
+                        ppt_path = create_powerpoint_from_rich_slides(slides_data, presentation['topic'])
+                    else:
+                        # Use basic slide format (AI-generated data)
+                        logger.info("Detected basic slide data, using create_enhanced_powerpoint")
+                        ppt_path = create_enhanced_powerpoint(slides_data, presentation['topic'])
                     
                     if ppt_path and os.path.exists(ppt_path):
                         logger.info(f"Enhanced PowerPoint created successfully: {ppt_path}")
                         
                         # Upload to R2 if available and not already uploaded
+                        s3_service = get_s3_service()
                         if s3_service.is_available() and not presentation.get('s3_url'):
                             try:
                                 filename = os.path.basename(ppt_path)
@@ -938,6 +962,7 @@ def delete_presentation(presentation_id):
             del presentations_db[presentation_id]
         
         # Delete from S3 if available
+        s3_service = get_s3_service()
         if s3_service.is_available():
             try:
                 s3_service.delete_presentation_files(presentation_id)
@@ -990,6 +1015,7 @@ def get_file_from_r2(presentation_id, filename):
         presentation = presentations_db[presentation_id]
         
         # Try to get file from R2
+        s3_service = get_s3_service()
         if s3_service.is_available():
             try:
                 # Generate the file key
@@ -1177,6 +1203,7 @@ if __name__ == '__main__':
     logger.info("- JSON extraction for accurate web rendering")
     logger.info("- PowerPoint and PDF export")
     logger.info("- Slide editing and updates")
+    s3_service = get_s3_service()
     logger.info(f"- S3 Status: {'Available' if s3_service.is_available() else 'Not Available'}")
     logger.info("\nMain Endpoints:")
     logger.info("POST /create_presentation - Create new presentation")

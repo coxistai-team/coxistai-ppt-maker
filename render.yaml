@@ -10,17 +10,21 @@ services:
         value: 3.11.0
       - key: OPENROUTER_API_KEY
         sync: false
+      - key: UNSPLASH_API_KEY
+        sync: false
       - key: ALLOWED_ORIGINS
         value: https://yourdomain.com,https://www.yourdomain.com
       - key: RENDER_DISK_PATH
         value: /opt/render/project/src/persistent_data
-      - key: AWS_ACCESS_KEY_ID
+      - key: R2_ACCOUNT_ID
         sync: false
-      - key: AWS_SECRET_ACCESS_KEY
+      - key: R2_ACCESS_KEY_ID
         sync: false
-      - key: AWS_REGION
-        value: us-east-1
-      - key: S3_BUCKET_NAME
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET_NAME
+        sync: false
+      - key: R2_ENDPOINT_URL
         sync: false
       - key: MAX_REQUESTS_PER_MINUTE
         value: "30"

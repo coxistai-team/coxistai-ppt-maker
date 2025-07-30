@@ -62,7 +62,8 @@ class SimpleImageGenerator:
             
             # Import S3 service for R2 upload
             try:
-                from modules.s3_service import s3_service
+                from modules.s3_service import get_s3_service
+                s3_service = get_s3_service()
                 s3_available = s3_service.is_available()
             except ImportError:
                 s3_available = False
@@ -833,3 +834,234 @@ def create_basic_slide(prs, slide_data: Dict[str, Any], slide_index: int, topic:
                     
     except Exception as e:
         logger.error(f"Error creating basic slide: {str(e)}") 
+
+def create_powerpoint_from_rich_slides(slides_data: List[Dict[str, Any]], topic: str) -> Optional[str]:
+    """
+    Create a PowerPoint presentation from rich frontend slide data
+    
+    Args:
+        slides_data: List of rich slide data with elements and background
+        topic: The presentation topic
+        
+    Returns:
+        Path to the created PowerPoint file or None if failed
+    """
+    try:
+        image_generator = SimpleImageGenerator()
+        COLORS = get_color_theme()
+        
+        logger.info(f"Creating presentation from rich slides with {COLORS['name']} theme...")
+        logger.info(f"Typography: {COLORS['font_primary']} (Headers) + {COLORS['font_secondary']} (Body)")
+
+        prs = Presentation()
+        prs.slide_width = Inches(13.33)
+        prs.slide_height = Inches(7.5)
+
+        # Generate images for slides
+        logger.info(f"Fetching {len(slides_data)} images for the topic '{topic}'...")
+        all_images = image_generator.generate_images(topic, num_slides=len(slides_data))
+
+        slide_images = {}
+        for idx, slide_data in enumerate(slides_data):
+            if all_images and idx < len(all_images) and all_images[idx]['filepath']:
+                slide_images[idx] = all_images[idx]['filepath']
+                logger.info(f"Assigned image for slide {idx + 1}")
+            else:
+                slide_images[idx] = None
+                logger.info(f"Using placeholder for slide {idx + 1}")
+
+        # TITLE SLIDE
+        title_slide = prs.slides.add_slide(prs.slide_layouts[6])
+        
+        background = title_slide.shapes.add_shape(
+            MSO_SHAPE.RECTANGLE, 
+            Inches(0), Inches(0), 
+            Inches(13.33), Inches(7.5)
+        )
+        background.fill.solid()
+        background.fill.fore_color.rgb = COLORS['background']
+        background.line.fill.background()
+
+        accent_shape = title_slide.shapes.add_shape(
+            MSO_SHAPE.RECTANGLE, 
+            Inches(0), Inches(0), 
+            Inches(4), Inches(7.5)
+        )
+        accent_shape.fill.solid()
+        accent_shape.fill.fore_color.rgb = COLORS['primary']
+        accent_shape.line.fill.background()
+
+        overlay = title_slide.shapes.add_shape(
+            MSO_SHAPE.RECTANGLE, 
+            Inches(3.5), Inches(0), 
+            Inches(1), Inches(7.5)
+        )
+        overlay.fill.solid()
+        overlay.fill.fore_color.rgb = COLORS['secondary']
+        overlay.fill.transparency = 0.3
+        overlay.line.fill.background()
+
+        title_box = title_slide.shapes.add_textbox(
+            Inches(4.8), Inches(2.5), Inches(8), Inches(2)
+        )
+        title_frame = title_box.text_frame
+        title_frame.text = topic.upper()
+        title_para = title_frame.paragraphs[0]
+        title_para.font.color.rgb = COLORS['text']
+        title_para.font.size = Pt(48)
+        title_para.font.bold = True
+        title_para.font.name = COLORS['font_primary']
+        title_para.alignment = PP_ALIGN.LEFT
+
+        subtitle_box = title_slide.shapes.add_textbox(
+            Inches(4.8), Inches(4.8), Inches(8), Inches(1)
+        )
+        subtitle_frame = subtitle_box.text_frame
+        subtitle_frame.text = f"Professional Presentation • {datetime.now().strftime('%B %Y')}"
+        subtitle_para = subtitle_frame.paragraphs[0]
+        subtitle_para.font.color.rgb = COLORS['light_text']
+        subtitle_para.font.size = Pt(18)
+        subtitle_para.font.name = COLORS['font_secondary']
+        subtitle_para.alignment = PP_ALIGN.LEFT
+
+        accent_line = title_slide.shapes.add_shape(
+            MSO_SHAPE.RECTANGLE,
+            Inches(4.8), Inches(4.3), 
+            Inches(3), Inches(0.08)
+        )
+        accent_line.fill.solid()
+        accent_line.fill.fore_color.rgb = COLORS['accent']
+        accent_line.line.fill.background()
+
+        # CONTENT SLIDES
+        for idx, slide_data in enumerate(slides_data, 1):
+            slide = prs.slides.add_slide(prs.slide_layouts[6])
+            
+            background = slide.shapes.add_shape(
+                MSO_SHAPE.RECTANGLE, 
+                Inches(0), Inches(0), 
+                Inches(13.33), Inches(7.5)
+            )
+            background.fill.solid()
+            background.fill.fore_color.rgb = COLORS['background']
+            background.line.fill.background()
+
+            content_card = slide.shapes.add_shape(
+                MSO_SHAPE.ROUNDED_RECTANGLE, 
+                Inches(0.4), Inches(0.4), 
+                Inches(12.53), Inches(6.7)
+            )
+            content_card.fill.solid()
+            content_card.fill.fore_color.rgb = COLORS['card_bg']
+            content_card.line.color.rgb = COLORS['border']
+            content_card.line.width = Pt(1)
+
+            header_bg = slide.shapes.add_shape(
+                MSO_SHAPE.RECTANGLE, 
+                Inches(0.4), Inches(0.4), 
+                Inches(12.53), Inches(1.1)
+            )
+            header_bg.fill.solid()
+            header_bg.fill.fore_color.rgb = COLORS['header_bg']
+            header_bg.line.fill.background()
+
+            # Process rich slide elements
+            elements = slide_data.get('elements', [])
+            title_text = ""
+            content_items = []
+            
+            for element in elements:
+                if element.get('type') == 'title' and element.get('content'):
+                    title_text = element['content']
+                elif element.get('type') == 'text' and element.get('content'):
+                    content_items.append(element['content'])
+                elif element.get('type') == 'bullet_list' and element.get('items'):
+                    content_items.extend(element['items'])
+
+            # Add title
+            title_box = slide.shapes.add_textbox(
+                Inches(0.8), Inches(0.6), Inches(11.73), Inches(0.7)
+            )
+            title_frame = title_box.text_frame
+            title_frame.text = title_text or f"Slide {idx}"
+            title_frame.margin_left = Inches(0.2)
+            title_frame.margin_right = Inches(0.2)
+            title_frame.margin_top = Inches(0.1)
+            title_frame.margin_bottom = Inches(0.1)
+            
+            title_para = title_frame.paragraphs[0]
+            title_para.font.color.rgb = RGBColor(255, 255, 255)
+            title_para.font.size = Pt(24)
+            title_para.font.bold = True
+            title_para.font.name = COLORS['font_primary']
+            title_para.alignment = PP_ALIGN.LEFT
+
+            # Add image if available
+            if idx - 1 in slide_images and slide_images[idx - 1]:
+                try:
+                    image_path = slide_images[idx - 1]
+                    if image_path and os.path.exists(image_path):
+                        # Fit image to slide
+                        fitted_image = fit_image_to_shape(image_path, 400, 300)
+                        if fitted_image:
+                            slide.shapes.add_picture(
+                                fitted_image, 
+                                Inches(8), Inches(1.8), 
+                                Inches(4.5), Inches(3.4)
+                            )
+                            # Clean up temporary file
+                            if fitted_image != image_path:
+                                try:
+                                    os.remove(fitted_image)
+                                except:
+                                    pass
+                        else:
+                            slide.shapes.add_picture(
+                                image_path, 
+                                Inches(8), Inches(1.8), 
+                                Inches(4.5), Inches(3.4)
+                            )
+                except Exception as e:
+                    logger.error(f"Error adding image to slide {idx}: {e}")
+
+            # Add content
+            content_box = slide.shapes.add_textbox(
+                Inches(0.9), Inches(1.8), Inches(6.8), Inches(4.5)
+            )
+            content_frame = content_box.text_frame
+            content_frame.clear()
+            content_frame.word_wrap = True
+            content_frame.margin_left = Inches(0.2)
+            content_frame.margin_top = Inches(0.2)
+            content_frame.margin_right = Inches(0.2)
+            content_frame.margin_bottom = Inches(0.2)
+
+            for i, item in enumerate(content_items[:4]):
+                if i == 0:
+                    p = content_frame.paragraphs[0]
+                else:
+                    p = content_frame.add_paragraph()
+                
+                p.text = f"• {item}"
+                p.font.size = Pt(18)
+                p.font.name = COLORS['font_secondary']
+                p.font.color.rgb = COLORS['text']
+                p.space_after = Pt(12)
+
+        # Add thank you slide
+        create_thank_you_slide(prs, COLORS, topic)
+        
+        # Save the presentation
+        filename = f"presentation_{topic.replace(' ', '_').lower()}_{int(datetime.now().timestamp())}.pptx"
+        filepath = os.path.join("generated_ppts", filename)
+        
+        # Ensure directory exists
+        os.makedirs("generated_ppts", exist_ok=True)
+        
+        prs.save(filepath)
+        logger.info(f"PowerPoint created successfully from rich slides: {filepath}")
+        return filepath
+        
+    except Exception as e:
+        logger.error(f"Error creating PowerPoint from rich slides: {str(e)}")
+        return None 
