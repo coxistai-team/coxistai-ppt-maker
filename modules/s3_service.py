@@ -16,6 +16,10 @@ logger = logging.getLogger(__name__)
 class S3Service:
     def __init__(self):
         """Initialize S3 service with Cloudflare R2 configuration"""
+        self._initialize_client()
+    
+    def _initialize_client(self):
+        """Initialize the S3 client with current environment variables"""
         self.bucket_name = os.getenv('R2_BUCKET_NAME', 'coxist-files')
         self.account_id = os.getenv('R2_ACCOUNT_ID')
         self.access_key_id = os.getenv('R2_ACCESS_KEY_ID')
@@ -389,4 +393,12 @@ class S3Service:
             logger.warning(f"Failed to cleanup temp file {file_path}: {e}")
 
 # Global S3 service instance
-s3_service = S3Service() 
+# Initialize S3 service after environment variables are loaded
+s3_service = None
+
+def get_s3_service():
+    """Get or create S3 service instance"""
+    global s3_service
+    if s3_service is None:
+        s3_service = S3Service()
+    return s3_service 

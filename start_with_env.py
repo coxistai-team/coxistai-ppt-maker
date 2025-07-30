@@ -43,8 +43,9 @@ try:
     print("✅ Flask app imported successfully")
     
     # Test S3 service
-    from modules.s3_service import s3_service
-    if s3_service.is_available():
+    from modules.s3_service import get_s3_service
+s3_service = get_s3_service()
+if s3_service.is_available():
         print("✅ S3 service is available")
     else:
         print("⚠️  S3 service is not available (this is okay for local development)")
