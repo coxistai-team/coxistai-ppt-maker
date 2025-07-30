@@ -6,11 +6,14 @@ Handles AI-powered content generation and PowerPoint file creation
 import os
 import requests
 import json
+import random
 from typing import List, Dict, Any, Optional
 from pptx import Presentation
 from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN
+from pptx.enum.shapes import MSO_SHAPE
+from datetime import datetime
 import logging
 
 logger = logging.getLogger(__name__)
@@ -18,6 +21,258 @@ logger = logging.getLogger(__name__)
 # Configuration
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_MODEL = "anthropic/claude-3.5-sonnet"
+
+try:
+    from PIL import Image, ImageDraw
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+    logger.warning("PIL not available. Image fitting will be limited.")
+
+class SimpleImageGenerator:
+    def __init__(self):
+        self.api_key = os.getenv("UNSPLASH_API_KEY")
+        self.headers = {'Authorization': f'Client-ID {self.api_key}'} if self.api_key else {}
+        self.request_count = 0  
+
+    def generate_images(self, topic, num_slides=5):  
+        """Get ALL images in ONE request - compatible with your existing code"""
+        self.request_count = 0
+        try:
+            if not self.api_key:
+                logger.warning("No Unsplash API key provided. Using placeholders.")
+                return self._create_placeholders(topic, num_slides)
+            
+            # SINGLE API REQUEST
+            self.request_count += 1
+            response = requests.get(
+                "https://api.unsplash.com/search/photos",
+                headers=self.headers,
+                params={
+                    'query': topic,
+                    'per_page': num_slides,
+                    'orientation': 'landscape'
+                },
+                timeout=20
+            )
+            response.raise_for_status()
+
+            os.makedirs("presentation_images", exist_ok=True)
+            images = []
+            
+            # Import S3 service for R2 upload
+            try:
+                from modules.s3_service import s3_service
+                s3_available = s3_service.is_available()
+            except ImportError:
+                s3_available = False
+            
+            for photo in response.json()['results'][:num_slides]:
+                img_id = photo['id']
+                filename = f"{topic[:20]}_{img_id}.jpg"
+                filepath = os.path.join("presentation_images", filename)
+                
+                if not os.path.exists(filepath):
+                    with open(filepath, 'wb') as f:
+                        f.write(requests.get(photo['urls']['regular']).content)
+                
+                # Upload to R2 if available
+                s3_url = None
+                if s3_available:
+                    try:
+                        s3_url = s3_service.upload_file(filepath, f"images_{topic}", filename, 'images')
+                        logger.info(f"Uploaded image to R2: {s3_url}")
+                    except Exception as e:
+                        logger.error(f"Failed to upload image to R2: {e}")
+                
+                images.append({
+                    'filepath': filepath,
+                    's3_url': s3_url,
+                    'photographer': photo['user']['name']
+                })
+            
+            logger.info(f"Generated {len(images)} images in 1 request")
+            return images
+            
+        except Exception as e:
+            logger.error(f"Error generating images: {str(e)}")
+            return self._create_placeholders(topic, num_slides)
+
+    def _create_placeholders(self, topic, num_slides):
+        """Fallback image generation"""
+        return [{
+            'filepath': None,
+            'photographer': "Placeholder"
+        } for _ in range(num_slides)]
+
+def get_color_theme():
+    """Get a professional color theme"""
+    themes = [
+        {
+            'name': 'Professional Blue',
+            'primary': RGBColor(31, 73, 125),
+            'secondary': RGBColor(68, 114, 196),
+            'accent': RGBColor(255, 193, 7),
+            'background': RGBColor(255, 255, 255),
+            'card_bg': RGBColor(248, 249, 250),
+            'header_bg': RGBColor(31, 73, 125),
+            'border': RGBColor(222, 226, 230),
+            'text': RGBColor(33, 37, 41),
+            'light_text': RGBColor(108, 117, 125),
+            'font_primary': 'Calibri',
+            'font_secondary': 'Calibri'
+        },
+        {
+            'name': 'Modern Dark',
+            'primary': RGBColor(52, 58, 64),
+            'secondary': RGBColor(73, 80, 87),
+            'accent': RGBColor(0, 123, 255),
+            'background': RGBColor(248, 249, 250),
+            'card_bg': RGBColor(255, 255, 255),
+            'header_bg': RGBColor(52, 58, 64),
+            'border': RGBColor(222, 226, 230),
+            'text': RGBColor(33, 37, 41),
+            'light_text': RGBColor(108, 117, 125),
+            'font_primary': 'Segoe UI',
+            'font_secondary': 'Segoe UI'
+        },
+        {
+            'name': 'Elegant Purple',
+            'primary': RGBColor(102, 51, 153),
+            'secondary': RGBColor(147, 112, 219),
+            'accent': RGBColor(255, 215, 0),
+            'background': RGBColor(255, 255, 255),
+            'card_bg': RGBColor(248, 249, 250),
+            'header_bg': RGBColor(102, 51, 153),
+            'border': RGBColor(222, 226, 230),
+            'text': RGBColor(33, 37, 41),
+            'light_text': RGBColor(108, 117, 125),
+            'font_primary': 'Georgia',
+            'font_secondary': 'Georgia'
+        }
+    ]
+    return random.choice(themes)
+
+def fit_image_to_shape(image_path, target_width, target_height):
+    """Fit image to target dimensions while maintaining aspect ratio"""
+    if not PIL_AVAILABLE or not image_path or not os.path.exists(image_path):
+        return None
+    
+    try:
+        with Image.open(image_path) as img:
+            # Convert to RGB if necessary
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            
+            # Calculate aspect ratios
+            img_aspect = img.width / img.height
+            target_aspect = target_width / target_height
+            
+            if img_aspect > target_aspect:
+                # Image is wider, crop width
+                new_width = int(target_height * img_aspect)
+                new_height = target_height
+                left = (new_width - target_width) // 2
+                img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                img = img.crop((left, 0, left + target_width, target_height))
+            else:
+                # Image is taller, crop height
+                new_width = target_width
+                new_height = int(target_width / img_aspect)
+                top = (new_height - target_height) // 2
+                img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                img = img.crop((0, top, target_width, top + target_height))
+            
+            # Save to temporary file
+            temp_path = f"{image_path}_fitted.jpg"
+            img.save(temp_path, 'JPEG', quality=85)
+            return temp_path
+            
+    except Exception as e:
+        logger.error(f"Error fitting image: {e}")
+        return None
+
+def create_thank_you_slide(prs, COLORS, topic):
+    """Create a professional thank you slide"""
+    thank_you_slide = prs.slides.add_slide(prs.slide_layouts[6])
+    
+    # Background
+    background = thank_you_slide.shapes.add_shape(
+        MSO_SHAPE.RECTANGLE, 
+        Inches(0), Inches(0), 
+        Inches(13.33), Inches(7.5)
+    )
+    background.fill.solid()
+    background.fill.fore_color.rgb = COLORS['background']
+    background.line.fill.background()
+
+    # Accent shape
+    accent_shape = thank_you_slide.shapes.add_shape(
+        MSO_SHAPE.RECTANGLE, 
+        Inches(0), Inches(0), 
+        Inches(4), Inches(7.5)
+    )
+    accent_shape.fill.solid()
+    accent_shape.fill.fore_color.rgb = COLORS['primary']
+    accent_shape.line.fill.background()
+
+    # Overlay
+    overlay = thank_you_slide.shapes.add_shape(
+        MSO_SHAPE.RECTANGLE, 
+        Inches(3.5), Inches(0), 
+        Inches(1), Inches(7.5)
+    )
+    overlay.fill.solid()
+    overlay.fill.fore_color.rgb = COLORS['secondary']
+    overlay.fill.transparency = 0.3
+    overlay.line.fill.background()
+
+    # Thank you text
+    thank_you_box = thank_you_slide.shapes.add_textbox(
+        Inches(4.8), Inches(2.5), Inches(8), Inches(1.5)
+    )
+    thank_you_frame = thank_you_box.text_frame
+    thank_you_frame.text = "THANK YOU"
+    thank_you_para = thank_you_frame.paragraphs[0]
+    thank_you_para.font.color.rgb = COLORS['text']
+    thank_you_para.font.size = Pt(54)
+    thank_you_para.font.bold = True
+    thank_you_para.font.name = COLORS['font_primary']
+    thank_you_para.alignment = PP_ALIGN.LEFT
+
+    # Subtitle
+    subtitle_box = thank_you_slide.shapes.add_textbox(
+        Inches(4.8), Inches(4.2), Inches(8), Inches(1)
+    )
+    subtitle_frame = subtitle_box.text_frame
+    subtitle_frame.text = f"Questions & Discussion"
+    subtitle_para = subtitle_frame.paragraphs[0]
+    subtitle_para.font.color.rgb = COLORS['light_text']
+    subtitle_para.font.size = Pt(24)
+    subtitle_para.font.name = COLORS['font_secondary']
+    subtitle_para.alignment = PP_ALIGN.LEFT
+
+    # Topic
+    topic_box = thank_you_slide.shapes.add_textbox(
+        Inches(4.8), Inches(5.5), Inches(8), Inches(0.8)
+    )
+    topic_frame = topic_box.text_frame
+    topic_frame.text = f"Presentation on: {topic}"
+    topic_para = topic_frame.paragraphs[0]
+    topic_para.font.color.rgb = COLORS['light_text']
+    topic_para.font.size = Pt(16)
+    topic_para.font.name = COLORS['font_secondary']
+    topic_para.alignment = PP_ALIGN.LEFT
+
+    # Accent line
+    accent_line = thank_you_slide.shapes.add_shape(
+        MSO_SHAPE.RECTANGLE,
+        Inches(4.8), Inches(4), 
+        Inches(3), Inches(0.08)
+    )
+    accent_line.fill.solid()
+    accent_line.fill.fore_color.rgb = COLORS['accent']
+    accent_line.line.fill.background()
 
 def generate_ai_content(topic: str, num_slides: int, api_key: str) -> Optional[List[Dict[str, Any]]]:
     """
@@ -98,27 +353,22 @@ def generate_ai_content(topic: str, num_slides: int, api_key: str) -> Optional[L
         
         if response.status_code == 200:
             result = response.json()
-            content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+            content = result.get('choices', [{}])[0].get('message', {}).get('content', '')
             
-            logger.info(f"Raw AI response: {content[:200]}...")  # Log first 200 chars
-            
-            # Parse the JSON response
             try:
+                # Parse the JSON response
                 slides_data = json.loads(content)
-                if isinstance(slides_data, list):
+                if isinstance(slides_data, list) and len(slides_data) > 0:
                     logger.info(f"Successfully generated {len(slides_data)} slides")
                     return slides_data
                 else:
-                    logger.error(f"AI response is not a list, got: {type(slides_data)}")
-                    logger.error(f"Response content: {content}")
+                    logger.error("Invalid JSON structure in AI response")
                     return create_fallback_slides(topic, num_slides, content)
             except json.JSONDecodeError as e:
                 logger.error(f"Failed to parse AI response as JSON: {e}")
-                logger.error(f"Raw content: {content}")
-                # Fallback: create basic slides from the text
                 return create_fallback_slides(topic, num_slides, content)
         else:
-            logger.error(f"OpenRouter API error: {response.status_code} - {response.text}")
+            logger.error(f"API request failed with status {response.status_code}")
             return create_fallback_slides(topic, num_slides)
             
     except Exception as e:
@@ -132,70 +382,86 @@ def create_fallback_slides(topic: str, num_slides: int, ai_content: str = "") ->
     Args:
         topic: The presentation topic
         num_slides: Number of slides to create
-        ai_content: Any AI content that was generated
+        ai_content: Any AI content that was generated (for debugging)
         
     Returns:
-        List of basic slide content
+        List of basic slide content dictionaries
     """
-    slides = []
+    logger.info(f"Creating fallback slides for topic: {topic}")
     
-    # Try to extract useful content from AI response if available
-    extracted_content = []
-    if ai_content:
-        # Try to extract bullet points or key phrases
-        lines = ai_content.split('\n')
-        for line in lines:
-            line = line.strip()
-            if line and len(line) > 10 and not line.startswith('```'):
-                # Remove markdown formatting
-                line = line.replace('*', '').replace('**', '').replace('#', '')
-                if line:
-                    extracted_content.append(line)
+    slides = []
     
     # Title slide
     slides.append({
         "title": f"Introduction to {topic}",
         "content": [
             f"Welcome to our presentation on {topic}",
-            "We'll explore key concepts and insights",
-            "Let's dive into the details"
+            "This presentation will cover key aspects and insights",
+            "Let's explore this fascinating topic together"
         ],
         "description": "Introduction and overview"
     })
     
     # Content slides
-    for i in range(1, num_slides - 1):
-        if extracted_content and i - 1 < len(extracted_content):
-            # Use extracted content if available
-            content_point = extracted_content[i - 1]
+    for i in range(1, min(num_slides, 6)):
+        if i == 1:
             slides.append({
-                "title": f"Key Point {i}",
+                "title": f"Key Concepts of {topic}",
                 "content": [
-                    content_point,
-                    "Supporting information and details",
-                    "Relevant examples and applications"
+                    "Understanding the fundamental principles",
+                    "Exploring core methodologies and approaches",
+                    "Identifying important trends and developments"
                 ],
-                "description": f"Key point {i} discussion"
+                "description": "Core concepts and principles"
+            })
+        elif i == 2:
+            slides.append({
+                "title": f"Applications and Use Cases",
+                "content": [
+                    "Real-world applications and implementations",
+                    "Industry-specific use cases and examples",
+                    "Practical benefits and advantages"
+                ],
+                "description": "Practical applications and examples"
+            })
+        elif i == 3:
+            slides.append({
+                "title": f"Challenges and Considerations",
+                "content": [
+                    "Common challenges and obstacles",
+                    "Important considerations and limitations",
+                    "Risk factors and mitigation strategies"
+                ],
+                "description": "Challenges and considerations"
+            })
+        elif i == 4:
+            slides.append({
+                "title": f"Future Trends and Opportunities",
+                "content": [
+                    "Emerging trends and developments",
+                    "Future opportunities and potential",
+                    "Recommendations for next steps"
+                ],
+                "description": "Future outlook and opportunities"
             })
         else:
-            # Use generic content
             slides.append({
-                "title": f"Key Point {i}",
+                "title": f"Additional Insights on {topic}",
                 "content": [
-                    f"Important aspect {i} of {topic}",
-                    "Supporting information and details",
-                    "Relevant examples and applications"
+                    "Further exploration of key aspects",
+                    "Additional perspectives and viewpoints",
+                    "Supporting evidence and data"
                 ],
-                "description": f"Key point {i} discussion"
+                "description": "Additional insights and information"
             })
     
-    # Conclusion slide
+    # Summary slide
     slides.append({
-        "title": "Summary and Next Steps",
+        "title": "Summary and Conclusion",
         "content": [
-            f"Key takeaways about {topic}",
-            "Important conclusions",
-            "Recommended next steps"
+            f"Key takeaways from our discussion of {topic}",
+            "Important points to remember",
+            "Thank you for your attention"
         ],
         "description": "Summary and conclusion"
     })
@@ -204,7 +470,7 @@ def create_fallback_slides(topic: str, num_slides: int, ai_content: str = "") ->
 
 def create_powerpoint(slides_data: List[Dict[str, Any]], topic: str) -> Optional[str]:
     """
-    Create a PowerPoint presentation from slide data
+    Create a professional PowerPoint presentation with enhanced design
     
     Args:
         slides_data: List of slide content dictionaries
@@ -214,55 +480,197 @@ def create_powerpoint(slides_data: List[Dict[str, Any]], topic: str) -> Optional
         Path to the created PowerPoint file or None if failed
     """
     try:
-        # Create presentation
-        prs = Presentation()
+        image_generator = SimpleImageGenerator()
+        COLORS = get_color_theme()
         
-        # Set slide size to 16:9
+        logger.info(f"Creating presentation with {COLORS['name']} theme...")
+        logger.info(f"Typography: {COLORS['font_primary']} (Headers) + {COLORS['font_secondary']} (Body)")
+
+        prs = Presentation()
         prs.slide_width = Inches(13.33)
         prs.slide_height = Inches(7.5)
-        
-        for i, slide_data in enumerate(slides_data):
-            # Choose layout based on slide number
-            if i == 0:
-                # Title slide
-                slide_layout = prs.slide_layouts[0]  # Title slide layout
-                slide = prs.slides.add_slide(slide_layout)
-                
-                # Set title
-                title = slide.shapes.title
-                title.text = slide_data.get("title", f"Slide {i+1}")
-                
-                # Set subtitle if available
-                if slide.shapes.placeholders:
-                    subtitle = slide.shapes.placeholders[1]
-                    subtitle.text = f"AI Generated Presentation\n{topic}"
-                    
+
+        # Generate images for slides
+        logger.info(f"Fetching {len(slides_data)} images for the topic '{topic}'...")
+        all_images = image_generator.generate_images(topic, num_slides=len(slides_data))
+
+        slide_images = {}
+        for idx, slide_data in enumerate(slides_data):
+            if all_images and idx < len(all_images) and all_images[idx]['filepath']:
+                slide_images[idx] = all_images[idx]['filepath']
+                logger.info(f"Assigned image for slide {idx + 1}: {slide_data['title']}")
             else:
-                # Content slide
-                slide_layout = prs.slide_layouts[1]  # Title and content layout
-                slide = prs.slides.add_slide(slide_layout)
-                
-                # Set title
-                title = slide.shapes.title
-                title.text = slide_data.get("title", f"Slide {i+1}")
-                
-                # Add content
-                content = slide_data.get("content", [])
-                if content and slide.shapes.placeholders:
-                    content_placeholder = slide.shapes.placeholders[1]
-                    text_frame = content_placeholder.text_frame
-                    text_frame.clear()
-                    
-                    for j, point in enumerate(content):
-                        if j == 0:
-                            p = text_frame.paragraphs[0]
+                slide_images[idx] = None
+                logger.info(f"Using placeholder for slide {idx + 1}: {slide_data['title']}")
+
+        # TITLE SLIDE
+        title_slide = prs.slides.add_slide(prs.slide_layouts[6])
+        
+        background = title_slide.shapes.add_shape(
+            MSO_SHAPE.RECTANGLE, 
+            Inches(0), Inches(0), 
+            Inches(13.33), Inches(7.5)
+        )
+        background.fill.solid()
+        background.fill.fore_color.rgb = COLORS['background']
+        background.line.fill.background()
+
+        accent_shape = title_slide.shapes.add_shape(
+            MSO_SHAPE.RECTANGLE, 
+            Inches(0), Inches(0), 
+            Inches(4), Inches(7.5)
+        )
+        accent_shape.fill.solid()
+        accent_shape.fill.fore_color.rgb = COLORS['primary']
+        accent_shape.line.fill.background()
+
+        overlay = title_slide.shapes.add_shape(
+            MSO_SHAPE.RECTANGLE, 
+            Inches(3.5), Inches(0), 
+            Inches(1), Inches(7.5)
+        )
+        overlay.fill.solid()
+        overlay.fill.fore_color.rgb = COLORS['secondary']
+        overlay.fill.transparency = 0.3
+        overlay.line.fill.background()
+
+        title_box = title_slide.shapes.add_textbox(
+            Inches(4.8), Inches(2.5), Inches(8), Inches(2)
+        )
+        title_frame = title_box.text_frame
+        title_frame.text = topic.upper()
+        title_para = title_frame.paragraphs[0]
+        title_para.font.color.rgb = COLORS['text']
+        title_para.font.size = Pt(48)
+        title_para.font.bold = True
+        title_para.font.name = COLORS['font_primary']
+        title_para.alignment = PP_ALIGN.LEFT
+
+        subtitle_box = title_slide.shapes.add_textbox(
+            Inches(4.8), Inches(4.8), Inches(8), Inches(1)
+        )
+        subtitle_frame = subtitle_box.text_frame
+        subtitle_frame.text = f"Professional Presentation • {datetime.now().strftime('%B %Y')}"
+        subtitle_para = subtitle_frame.paragraphs[0]
+        subtitle_para.font.color.rgb = COLORS['light_text']
+        subtitle_para.font.size = Pt(18)
+        subtitle_para.font.name = COLORS['font_secondary']
+        subtitle_para.alignment = PP_ALIGN.LEFT
+
+        accent_line = title_slide.shapes.add_shape(
+            MSO_SHAPE.RECTANGLE,
+            Inches(4.8), Inches(4.3), 
+            Inches(3), Inches(0.08)
+        )
+        accent_line.fill.solid()
+        accent_line.fill.fore_color.rgb = COLORS['accent']
+        accent_line.line.fill.background()
+
+        # CONTENT SLIDES
+        for idx, slide_data in enumerate(slides_data, 1):
+            slide = prs.slides.add_slide(prs.slide_layouts[6])
+            
+            background = slide.shapes.add_shape(
+                MSO_SHAPE.RECTANGLE, 
+                Inches(0), Inches(0), 
+                Inches(13.33), Inches(7.5)
+            )
+            background.fill.solid()
+            background.fill.fore_color.rgb = COLORS['background']
+            background.line.fill.background()
+
+            content_card = slide.shapes.add_shape(
+                MSO_SHAPE.ROUNDED_RECTANGLE, 
+                Inches(0.4), Inches(0.4), 
+                Inches(12.53), Inches(6.7)
+            )
+            content_card.fill.solid()
+            content_card.fill.fore_color.rgb = COLORS['card_bg']
+            content_card.line.color.rgb = COLORS['border']
+            content_card.line.width = Pt(1)
+
+            header_bg = slide.shapes.add_shape(
+                MSO_SHAPE.RECTANGLE, 
+                Inches(0.4), Inches(0.4), 
+                Inches(12.53), Inches(1.1)
+            )
+            header_bg.fill.solid()
+            header_bg.fill.fore_color.rgb = COLORS['header_bg']
+            header_bg.line.fill.background()
+
+            title_box = slide.shapes.add_textbox(
+                Inches(0.8), Inches(0.6), Inches(11.73), Inches(0.7)
+            )
+            title_frame = title_box.text_frame
+            title_frame.text = slide_data['title']
+            title_frame.margin_left = Inches(0.2)
+            title_frame.margin_right = Inches(0.2)
+            title_frame.margin_top = Inches(0.1)
+            title_frame.margin_bottom = Inches(0.1)
+            
+            title_para = title_frame.paragraphs[0]
+            title_para.font.color.rgb = RGBColor(255, 255, 255)
+            title_para.font.size = Pt(24)
+            title_para.font.bold = True
+            title_para.font.name = COLORS['font_primary']
+            title_para.alignment = PP_ALIGN.LEFT
+
+            # Add image if available
+            if idx - 1 in slide_images and slide_images[idx - 1]:
+                try:
+                    image_path = slide_images[idx - 1]
+                    if image_path and os.path.exists(image_path):
+                        # Fit image to slide
+                        fitted_image = fit_image_to_shape(image_path, 400, 300)
+                        if fitted_image:
+                            slide.shapes.add_picture(
+                                fitted_image, 
+                                Inches(8), Inches(1.8), 
+                                Inches(4.5), Inches(3.4)
+                            )
+                            # Clean up temporary file
+                            if fitted_image != image_path:
+                                try:
+                                    os.remove(fitted_image)
+                                except:
+                                    pass
                         else:
-                            p = text_frame.add_paragraph()
-                        p.text = point
-                        p.level = 0  # Top level bullet
+                            slide.shapes.add_picture(
+                                image_path, 
+                                Inches(8), Inches(1.8), 
+                                Inches(4.5), Inches(3.4)
+                            )
+                except Exception as e:
+                    logger.error(f"Error adding image to slide {idx}: {e}")
+
+            content_box = slide.shapes.add_textbox(
+                Inches(0.9), Inches(1.8), Inches(6.8), Inches(4.5)
+            )
+            content_frame = content_box.text_frame
+            content_frame.clear()
+            content_frame.word_wrap = True
+            content_frame.margin_left = Inches(0.2)
+            content_frame.margin_top = Inches(0.2)
+            content_frame.margin_right = Inches(0.2)
+            content_frame.margin_bottom = Inches(0.2)
+
+            for i, point in enumerate(slide_data['content'][:4]):
+                if i == 0:
+                    p = content_frame.paragraphs[0]
+                else:
+                    p = content_frame.add_paragraph()
+                
+                p.text = f"• {point}"
+                p.font.size = Pt(18)
+                p.font.name = COLORS['font_secondary']
+                p.font.color.rgb = COLORS['text']
+                p.space_after = Pt(12)
+
+        # Add thank you slide
+        create_thank_you_slide(prs, COLORS, topic)
         
         # Save the presentation
-        filename = f"presentation_{topic.replace(' ', '_').lower()}_{int(time.time())}.pptx"
+        filename = f"presentation_{topic.replace(' ', '_').lower()}_{int(datetime.now().timestamp())}.pptx"
         filepath = os.path.join("generated_ppts", filename)
         
         # Ensure directory exists
@@ -298,52 +706,25 @@ def enhance_slide_design(slide, slide_data: Dict[str, Any]):
                 for paragraph in shape.text_frame.paragraphs:
                     if paragraph.text.strip():
                         paragraph.font.size = Pt(18)
-                        paragraph.font.color.rgb = RGBColor(68, 68, 68)
+                        paragraph.font.color.rgb = RGBColor(51, 51, 51)
                         
     except Exception as e:
-        logger.warning(f"Error enhancing slide design: {str(e)}")
-
-# Import time module for timestamp
-import time 
+        logger.error(f"Error enhancing slide design: {str(e)}")
 
 def create_enhanced_powerpoint(slides_data: List[Dict[str, Any]], topic: str) -> Optional[str]:
     """
-    Create an enhanced PowerPoint presentation from rich frontend slide data
+    Create an enhanced PowerPoint presentation with professional design
     
     Args:
-        slides_data: List of slide data with elements, backgrounds, and styling
+        slides_data: List of slide content dictionaries
         topic: The presentation topic
         
     Returns:
         Path to the created PowerPoint file or None if failed
     """
     try:
-        # Create presentation
-        prs = Presentation()
-        
-        # Set slide size to 16:9
-        prs.slide_width = Inches(13.33)
-        prs.slide_height = Inches(7.5)
-        
-        for i, slide_data in enumerate(slides_data):
-            # Check if this is rich frontend data or basic AI data
-            if 'elements' in slide_data and 'background' in slide_data:
-                # Rich frontend data - use enhanced creation
-                slide = create_enhanced_slide(prs, slide_data, i)
-            else:
-                # Basic AI data - use simple creation
-                slide = create_basic_slide(prs, slide_data, i, topic)
-        
-        # Save the presentation
-        filename = f"presentation_{topic.replace(' ', '_').lower()}_{int(time.time())}.pptx"
-        filepath = os.path.join("generated_ppts", filename)
-        
-        # Ensure directory exists
-        os.makedirs("generated_ppts", exist_ok=True)
-        
-        prs.save(filepath)
-        logger.info(f"Enhanced PowerPoint created successfully: {filepath}")
-        return filepath
+        # Use the enhanced create_powerpoint function
+        return create_powerpoint(slides_data, topic)
         
     except Exception as e:
         logger.error(f"Error creating enhanced PowerPoint: {str(e)}")
@@ -351,177 +732,104 @@ def create_enhanced_powerpoint(slides_data: List[Dict[str, Any]], topic: str) ->
 
 def create_enhanced_slide(prs, slide_data: Dict[str, Any], slide_index: int):
     """
-    Create an enhanced slide with rich styling, backgrounds, and elements
+    Create an enhanced slide with professional design
     
     Args:
-        prs: Presentation object
-        slide_data: Rich slide data with elements and background
+        prs: The presentation object
+        slide_data: Data for the slide
         slide_index: Index of the slide
     """
-    # Use blank layout for maximum customization
-    slide_layout = prs.slide_layouts[6]  # Blank layout
-    slide = prs.slides.add_slide(slide_layout)
-    
-    # Set background
-    background = slide_data.get('background', {})
-    if background.get('type') == 'gradient':
-        # Create gradient background
-        gradient = background.get('gradient', '')
-        if 'blue' in gradient or 'purple' in gradient:
-            slide.background.fill.solid()
-            slide.background.fill.fore_color.rgb = RGBColor(59, 130, 246)  # Blue
-        elif 'green' in gradient:
-            slide.background.fill.solid()
-            slide.background.fill.fore_color.rgb = RGBColor(34, 197, 94)  # Green
-        elif 'red' in gradient or 'pink' in gradient:
-            slide.background.fill.solid()
-            slide.background.fill.fore_color.rgb = RGBColor(239, 68, 68)  # Red
-        else:
-            # Default gradient
-            slide.background.fill.solid()
-            slide.background.fill.fore_color.rgb = RGBColor(15, 23, 42)  # Slate
-    else:
-        # Solid background
-        slide.background.fill.solid()
-        slide.background.fill.fore_color.rgb = RGBColor(15, 23, 42)  # Dark slate
-    
-    # Add elements
-    elements = slide_data.get('elements', [])
-    for element in elements:
-        element_type = element.get('type', 'text')
-        content = element.get('content', '')
-        position = element.get('position', {})
-        style = element.get('style', {})
+    try:
+        # Create slide with blank layout
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
         
-        if element_type == 'title':
-            # Add title text box
-            left = Inches(position.get('left', 50) / 100)
-            top = Inches(position.get('top', 50) / 100)
-            width = Inches(position.get('width', 800) / 100)
-            height = Inches(position.get('height', 100) / 100)
+        # Add background
+        background = slide.shapes.add_shape(
+            MSO_SHAPE.RECTANGLE,
+            Inches(0), Inches(0),
+            Inches(13.33), Inches(7.5)
+        )
+        background.fill.solid()
+        background.fill.fore_color.rgb = RGBColor(255, 255, 255)
+        background.line.fill.background()
+        
+        # Add title
+        title_box = slide.shapes.add_textbox(
+            Inches(1), Inches(0.5), Inches(11.33), Inches(1.5)
+        )
+        title_frame = title_box.text_frame
+        title_frame.text = slide_data.get('title', f'Slide {slide_index + 1}')
+        title_para = title_frame.paragraphs[0]
+        title_para.font.size = Pt(36)
+        title_para.font.bold = True
+        title_para.font.color.rgb = RGBColor(31, 73, 125)
+        title_para.alignment = PP_ALIGN.CENTER
+        
+        # Add content
+        content_box = slide.shapes.add_textbox(
+            Inches(1), Inches(2.5), Inches(11.33), Inches(4.5)
+        )
+        content_frame = content_box.text_frame
+        content_frame.clear()
+        
+        content = slide_data.get('content', [])
+        for i, point in enumerate(content):
+            if i == 0:
+                p = content_frame.paragraphs[0]
+            else:
+                p = content_frame.add_paragraph()
             
-            textbox = slide.shapes.add_textbox(left, top, width, height)
-            text_frame = textbox.text_frame
-            text_frame.text = content
+            p.text = f"• {point}"
+            p.font.size = Pt(20)
+            p.font.color.rgb = RGBColor(51, 51, 51)
+            p.space_after = Pt(12)
             
-            # Style the title
-            paragraph = text_frame.paragraphs[0]
-            paragraph.font.size = Pt(style.get('font_size', 32))
-            paragraph.font.bold = style.get('font_weight') == 'bold'
-            paragraph.font.color.rgb = RGBColor(255, 255, 255)  # White text
-            paragraph.alignment = PP_ALIGN.CENTER
-            
-        elif element_type == 'text':
-            # Add content text box
-            left = Inches(position.get('left', 100) / 100)
-            top = Inches(position.get('top', 150) / 100)
-            width = Inches(position.get('width', 700) / 100)
-            height = Inches(position.get('height', 50) / 100)
-            
-            textbox = slide.shapes.add_textbox(left, top, width, height)
-            text_frame = textbox.text_frame
-            text_frame.text = content
-            
-            # Style the text
-            paragraph = text_frame.paragraphs[0]
-            paragraph.font.size = Pt(style.get('font_size', 18))
-            paragraph.font.color.rgb = RGBColor(255, 255, 255)  # White text
-            paragraph.alignment = PP_ALIGN.LEFT
-            
-        elif element_type == 'bullet_list':
-            # Add bullet list
-            items = element.get('items', [])
-            if items:
-                left = Inches(position.get('left', 100) / 100)
-                top = Inches(position.get('top', 150) / 100)
-                width = Inches(position.get('width', 700) / 100)
-                height = Inches(position.get('height', 200) / 100)
-                
-                textbox = slide.shapes.add_textbox(left, top, width, height)
-                text_frame = textbox.text_frame
-                
-                for i, item in enumerate(items):
-                    if i == 0:
-                        p = text_frame.paragraphs[0]
-                    else:
-                        p = text_frame.add_paragraph()
-                    p.text = f"• {item}"
-                    p.font.size = Pt(style.get('font_size', 18))
-                    p.font.color.rgb = RGBColor(255, 255, 255)  # White text
-                    p.level = 0
-                    
-        elif element_type == 'image':
-            # Add image if src is available
-            src = element.get('src', '')
-            if src and src.startswith('http'):
-                try:
-                    left = Inches(position.get('left', 50) / 100)
-                    top = Inches(position.get('top', 50) / 100)
-                    width = Inches(position.get('width', 400) / 100)
-                    height = Inches(position.get('height', 300) / 100)
-                    
-                    # Download and add image
-                    response = requests.get(src, timeout=10)
-                    if response.status_code == 200:
-                        img_path = f"temp_img_{slide_index}_{hash(src)}.jpg"
-                        with open(img_path, 'wb') as f:
-                            f.write(response.content)
-                        
-                        slide.shapes.add_picture(img_path, left, top, width, height)
-                        
-                        # Clean up temp file
-                        os.remove(img_path)
-                except Exception as e:
-                    logger.warning(f"Could not add image {src}: {str(e)}")
-    
-    return slide
+    except Exception as e:
+        logger.error(f"Error creating enhanced slide: {str(e)}")
 
 def create_basic_slide(prs, slide_data: Dict[str, Any], slide_index: int, topic: str):
     """
-    Create a basic slide from AI-generated content
+    Create a basic slide with simple layout
     
     Args:
-        prs: Presentation object
-        slide_data: Basic slide data with title and content
+        prs: The presentation object
+        slide_data: Data for the slide
         slide_index: Index of the slide
-        topic: Presentation topic
+        topic: The presentation topic
     """
-    if slide_index == 0:
-        # Title slide
-        slide_layout = prs.slide_layouts[0]  # Title slide layout
-        slide = prs.slides.add_slide(slide_layout)
-        
-        # Set title
-        title = slide.shapes.title
-        title.text = slide_data.get("title", f"Slide {slide_index+1}")
-        
-        # Set subtitle if available
-        if slide.shapes.placeholders:
-            subtitle = slide.shapes.placeholders[1]
-            subtitle.text = f"AI Generated Presentation\n{topic}"
+    try:
+        if slide_index == 0:
+            # Title slide
+            slide_layout = prs.slide_layouts[0]
+            slide = prs.slides.add_slide(slide_layout)
             
-    else:
-        # Content slide
-        slide_layout = prs.slide_layouts[1]  # Title and content layout
-        slide = prs.slides.add_slide(slide_layout)
-        
-        # Set title
-        title = slide.shapes.title
-        title.text = slide_data.get("title", f"Slide {slide_index+1}")
-        
-        # Add content
-        content = slide_data.get("content", [])
-        if content and slide.shapes.placeholders:
-            content_placeholder = slide.shapes.placeholders[1]
-            text_frame = content_placeholder.text_frame
-            text_frame.clear()
+            title = slide.shapes.title
+            title.text = slide_data.get('title', topic)
             
-            for j, point in enumerate(content):
-                if j == 0:
-                    p = text_frame.paragraphs[0]
-                else:
-                    p = text_frame.add_paragraph()
-                p.text = point
-                p.level = 0  # Top level bullet
-    
-    return slide 
+            if slide.shapes.placeholders:
+                subtitle = slide.shapes.placeholders[1]
+                subtitle.text = f"AI Generated Presentation\n{topic}"
+        else:
+            # Content slide
+            slide_layout = prs.slide_layouts[1]
+            slide = prs.slides.add_slide(slide_layout)
+            
+            title = slide.shapes.title
+            title.text = slide_data.get('title', f'Slide {slide_index + 1}')
+            
+            content = slide_data.get('content', [])
+            if content and slide.shapes.placeholders:
+                content_placeholder = slide.shapes.placeholders[1]
+                text_frame = content_placeholder.text_frame
+                text_frame.clear()
+                
+                for j, point in enumerate(content):
+                    if j == 0:
+                        p = text_frame.paragraphs[0]
+                    else:
+                        p = text_frame.add_paragraph()
+                    p.text = point
+                    p.level = 0
+                    
+    except Exception as e:
+        logger.error(f"Error creating basic slide: {str(e)}") 

@@ -27,7 +27,7 @@ from pptx.enum.shapes import MSO_SHAPE_TYPE
 import base64
 
 # Import the PowerPoint generator functions
-from modules.pptfinal import generate_ai_content, create_powerpoint
+from modules.pptfinal import generate_ai_content, create_powerpoint, create_enhanced_powerpoint
 from modules.s3_service import s3_service
 
 # Configure logging with better formatting
@@ -324,11 +324,23 @@ def test():
 def health_check():
     """Health check endpoint"""
     s3_available = s3_service.is_available()
+    
+    # Check R2 configuration
+    r2_config = {
+        'account_id': bool(os.getenv('R2_ACCOUNT_ID')),
+        'access_key_id': bool(os.getenv('R2_ACCESS_KEY_ID')),
+        'secret_access_key': bool(os.getenv('R2_SECRET_ACCESS_KEY')),
+        'bucket_name': os.getenv('R2_BUCKET_NAME', 'Not Set'),
+        'endpoint_url': os.getenv('R2_ENDPOINT_URL', 'Not Set')
+    }
+    
     return jsonify({
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
         "s3_available": s3_available,
-        "openrouter_configured": bool(OPENROUTER_API_KEY)
+        "r2_configuration": r2_config,
+        "openrouter_configured": bool(OPENROUTER_API_KEY),
+        "unsplash_configured": bool(os.getenv('UNSPLASH_API_KEY'))
     })
 
 @app.route('/create_presentation', methods=['POST', 'OPTIONS'])
@@ -372,8 +384,8 @@ def create_presentation():
             logger.error("Failed to generate AI content")
             return jsonify({'error': 'Failed to generate presentation content. Please try again.'}), 500
         
-        # Create PowerPoint file
-        ppt_path = create_powerpoint(slides_data, topic)
+        # Create PowerPoint file with enhanced design
+        ppt_path = create_enhanced_powerpoint(slides_data, topic)
         
         if not ppt_path:
             logger.error("Failed to create PowerPoint file")
@@ -382,12 +394,23 @@ def create_presentation():
         # Generate unique presentation ID
         presentation_id = str(uuid.uuid4())
         
+        # Upload PowerPoint file to R2 if available
+        s3_url = None
+        if s3_service.is_available() and ppt_path:
+            try:
+                filename = os.path.basename(ppt_path)
+                s3_url = s3_service.upload_file(ppt_path, presentation_id, filename, 'presentations')
+                logger.info(f"Uploaded PowerPoint to R2: {s3_url}")
+            except Exception as e:
+                logger.error(f"Failed to upload PowerPoint to R2: {e}")
+        
         # Create presentation data
         presentation_data = {
             'id': presentation_id,
             'topic': topic,
             'slides': slides_data,
             'ppt_path': ppt_path,
+            's3_url': s3_url,
             'created_at': datetime.now().isoformat(),
             'updated_at': datetime.now().isoformat(),
             # Add the json_data structure expected by frontend
@@ -406,6 +429,14 @@ def create_presentation():
         
         # Store in memory for quick access
         presentations_db[presentation_id] = presentation_data
+        
+        # Upload presentation data to R2
+        if s3_service.is_available():
+            try:
+                s3_service.upload_presentation_data(presentation_id, presentation_data)
+                logger.info(f"Uploaded presentation data to R2: {presentation_id}")
+            except Exception as e:
+                logger.error(f"Failed to upload presentation data to R2: {e}")
         
         logger.info(f"Presentation created successfully: {presentation_id}")
         logger.info(f"Saved to file: {json_file_path}")
@@ -731,6 +762,17 @@ def export_ppt():
                     
                     if ppt_path and os.path.exists(ppt_path):
                         logger.info(f"Enhanced PowerPoint created successfully: {ppt_path}")
+                        
+                        # Upload to R2 if available and not already uploaded
+                        if s3_service.is_available() and not presentation.get('s3_url'):
+                            try:
+                                filename = os.path.basename(ppt_path)
+                                s3_url = s3_service.upload_file(ppt_path, presentation_id, filename, 'presentations')
+                                presentation['s3_url'] = s3_url
+                                logger.info(f"Uploaded to R2: {s3_url}")
+                            except Exception as e:
+                                logger.error(f"Failed to upload to R2: {e}")
+                        
                         return send_file(
                             ppt_path,
                             as_attachment=True,
@@ -927,6 +969,68 @@ def delete_presentation(presentation_id):
         return jsonify({
             'success': False,
             'error': f'Failed to delete presentation: {str(e)}'
+        }), 500
+
+@app.route('/get_file/<presentation_id>/<filename>', methods=['GET'])
+def get_file_from_r2(presentation_id, filename):
+    """Get file from R2 storage"""
+    try:
+        # Check if presentation exists
+        if presentation_id not in presentations_db:
+            presentation_file = os.path.join(JSON_FOLDER, f"{presentation_id}.json")
+            if os.path.exists(presentation_file):
+                with open(presentation_file, 'r') as f:
+                    presentations_db[presentation_id] = json.load(f)
+            else:
+                return jsonify({
+                    'success': False,
+                    'error': 'Presentation not found'
+                }), 404
+        
+        presentation = presentations_db[presentation_id]
+        
+        # Try to get file from R2
+        if s3_service.is_available():
+            try:
+                # Generate the file key
+                file_key = s3_service._generate_file_key(presentation_id, filename, 'presentations')
+                
+                # Create a temporary file
+                import tempfile
+                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(filename)[1])
+                temp_path = temp_file.name
+                temp_file.close()
+                
+                # Download from R2
+                if s3_service.download_file(file_key, temp_path):
+                    return send_file(
+                        temp_path,
+                        as_attachment=True,
+                        download_name=filename,
+                        mimetype='application/octet-stream'
+                    )
+                else:
+                    return jsonify({
+                        'success': False,
+                        'error': 'File not found in R2'
+                    }), 404
+            except Exception as e:
+                logger.error(f"Error getting file from R2: {e}")
+                return jsonify({
+                    'success': False,
+                    'error': f'Error accessing file: {str(e)}'
+                }), 500
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'R2 storage not available'
+            }), 503
+            
+    except Exception as e:
+        logger.error(f"Error in get_file_from_r2: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': f'Internal server error: {str(e)}'
         }), 500
 
 @app.route('/slide_operations', methods=['POST', 'OPTIONS'])

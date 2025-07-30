@@ -5,11 +5,15 @@ This service provides AI-powered presentation generation for the CoXist AI platf
 ## Features
 
 - 🤖 AI-powered presentation content generation using OpenRouter API
-- 📊 Professional PowerPoint creation with custom layouts
+- 📊 Professional PowerPoint creation with enhanced designs and layouts
+- 🎨 Multiple color themes and professional typography
+- 🖼️ Unsplash image integration for visual enhancement
 - 🌐 JSON API for web integration
-- 📁 S3/R2 cloud storage integration
+- 📁 Cloudflare R2 cloud storage integration
 - 📤 Export to PowerPoint and PDF formats
 - ✏️ Real-time slide editing and updates
+- 🎯 Thank you slide with professional conclusion
+- ☁️ Automatic file storage and retrieval from R2
 
 ## Quick Start
 
@@ -25,6 +29,12 @@ Create a `.env` file in the project root:
 
 ```env
 OPENROUTER_API_KEY=your_openrouter_api_key_here
+UNSPLASH_API_KEY=your_unsplash_api_key_here
+R2_ACCOUNT_ID=your_r2_account_id_here
+R2_ACCESS_KEY_ID=your_r2_access_key_id_here
+R2_SECRET_ACCESS_KEY=your_r2_secret_access_key_here
+R2_BUCKET_NAME=your_r2_bucket_name_here
+R2_ENDPOINT_URL=https://your_account_id.r2.cloudflarestorage.com
 RENDER_DISK_PATH=./persistent_data
 ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000
 ```
@@ -97,6 +107,43 @@ Content-Type: application/json
   "content": "Updated slide content"
 }
 ```
+
+### Get File from R2
+
+```bash
+GET /get_file/{presentation_id}/{filename}
+```
+
+## Enhanced Features
+
+### Professional Design
+
+- **Color Themes**: Multiple professional color schemes (Blue, Dark, Purple)
+- **Typography**: Professional fonts (Calibri, Segoe UI, Georgia)
+- **Layouts**: Enhanced slide layouts with proper spacing and alignment
+- **Visual Elements**: Background shapes, accent lines, and professional styling
+
+### Image Integration
+
+- **Unsplash API**: Automatic image fetching based on presentation topic
+- **Image Fitting**: Smart image resizing and cropping for optimal slide placement
+- **Fallback System**: Graceful handling when images are unavailable
+- **Quality Optimization**: High-quality image processing with proper compression
+
+### Enhanced Slides
+
+- **Title Slide**: Professional introduction with topic and date
+- **Content Slides**: Well-structured content with bullet points and images
+- **Thank You Slide**: Professional conclusion slide with Q&A section
+- **Responsive Design**: Optimized for different screen sizes and formats
+
+### Cloudflare R2 Integration
+
+- **Automatic Upload**: PowerPoint files and images automatically uploaded to R2
+- **File Retrieval**: Direct access to files stored in R2 bucket
+- **Metadata Storage**: Presentation data and JSON structures stored in R2
+- **Fallback System**: Local storage when R2 is unavailable
+- **Secure Access**: Proper authentication and access control
 
 ## Integration with Frontend
 
